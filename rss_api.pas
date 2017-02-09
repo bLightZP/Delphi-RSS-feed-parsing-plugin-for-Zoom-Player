@@ -36,8 +36,29 @@ uses misc_utils_unit;
 
 
 function RSSdurationToSeconds(rssDuration : String) : Integer;
+var
+  sList : TStringList;
 begin
   Result := 0;
+  sList := TStringList.Create;
+  Split(rssDuration,':',sList);
+
+  If sList.Count = 3 then
+  Begin
+    Result := (StrToIntDef(sList[0],0)*3600)+(StrToIntDef(sList[1],0)*60)+(StrToIntDef(sList[2],0));
+  End
+    else
+  If sList.Count = 2 then
+  Begin
+    Result := (StrToIntDef(sList[0],0)*60)+(StrToIntDef(sList[1],0));
+  End
+    else
+  If sList.Count = 1 then
+  Begin
+    Result := StrToIntDef(sList[1],0);
+  End;
+
+  sList.Free;
 end;
 
 

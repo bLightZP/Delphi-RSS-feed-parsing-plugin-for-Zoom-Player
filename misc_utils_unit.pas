@@ -35,7 +35,7 @@ function  DownloadImageToFile(URL : String; ImageFilePath, ImageFileName : WideS
 procedure DownloadImageToFileThreaded(URL : String; ImageFilePath, ImageFileName : WideString; var Status : String; var ErrorCode: Integer; TimeOut : DWord; var SuccessCode, DownloadEnded : Boolean);
 
 function  URLEncodeUTF8(stInput : widestring) : string;
-function  HTMLUnicodeToUTF8(const AStr: String): String; 
+function  HTMLUnicodeToUTF8(const AStr: String): String;
 
 function  SetRegDWord(BaseKey : HKey; SubKey : String; KeyEntry : String; KeyValue : Integer) : Boolean;
 function  GetRegDWord(BaseKey : HKey; SubKey : String; KeyEntry : String) : Integer;
@@ -56,6 +56,10 @@ function  IntToStrDelimiter(iSrc : Int64; dChar : Char) : String;
 function  DosToAnsi(S: String): String;
 
 function  InputComboW(ownerWindow: THandle; const ACaption, APrompt: Widestring; const AList: TTNTStrings; var AOutput : WideString) : Boolean;
+
+procedure Split(S : String; Ch : Char; sList : TStrings); overload;
+procedure Split(S : WideString; Ch : Char; sList : TTNTStrings); overload;
+
 
 
 implementation
@@ -848,6 +852,37 @@ begin
     Result := '';
   end;
 end;
+
+
+procedure Split(S : String; Ch : Char; sList : TStrings); overload;
+var
+  I : Integer;
+begin
+  While Pos(Ch,S) > 0 do
+  Begin
+    I := Pos(Ch,S);
+    sList.Add(Copy(S,1,I-1));
+    Delete(S,1,I);
+  End;
+  If Length(S) > 0 then sList.Add(S);
+end;
+
+
+procedure Split(S : WideString; Ch : Char; sList : TTNTStrings); overload;
+var
+  I : Integer;
+begin
+  While Pos(Ch,S) > 0 do
+  Begin
+    I := Pos(Ch,S);
+    sList.Add(Copy(S,1,I-1));
+    Delete(S,1,I);
+  End;
+  If Length(S) > 0 then sList.Add(S);
+end;
+
+
+
 
 
 
