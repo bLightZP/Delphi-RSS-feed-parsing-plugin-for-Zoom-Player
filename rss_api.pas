@@ -15,7 +15,7 @@ Type
   Record
     rsseType         : Integer;
     rssePublishOrder : Integer;
-    rssePublishDate  : WideString;
+    rssePublishDate  : TDateTime;
     rsseTitle        : WideString;
     rsseDescription  : WideString;
     rsseURL          : WideString;
@@ -32,7 +32,7 @@ function RSSdurationToSeconds(rssDuration : String) : Integer;
 
 implementation
 
-uses misc_utils_unit;
+uses misc_utils_unit, IdGlobalProtocols;
 
 
 function RSSdurationToSeconds(rssDuration : String) : Integer;
@@ -181,7 +181,7 @@ begin
               New(nEntry);
               nEntry^.rsseType         := 0;
               nEntry^.rssePublishOrder := $FFFFFF-rssList.Count;
-              nEntry^.rssePublishDate  := '';
+              nEntry^.rssePublishDate  := 0;
               nEntry^.rsseTitle        := '';
               nEntry^.rsseURL          := '';
               nEntry^.rsseDescription  := '';
@@ -241,8 +241,7 @@ begin
 
               I  := Pos('<pubdate>',sItemL);
               I1 := Pos('</pubdate>',sItemL);
-              If (I > 0) and (I1 > 0) then nEntry^.rssePublishDate := DecodeCData(Copy(sItem,I+9,(I1-I)-9));
-
+              If (I > 0) and (I1 > 0) then nEntry^.rssePublishDate := StrInternetToDateTime(DecodeCData(Copy(sItem,I+9,(I1-I)-9)));
               // Add to list
               If (nEntry^.rsseTitle <> '') and (nEntry^.rsseURL <> '') then
               Begin
@@ -251,17 +250,30 @@ begin
                 DebugMsgFT(LogInit,'Title     : '+nEntry^.rsseTitle);
                 DebugMsgFT(LogInit,'URL       : '+nEntry^.rsseURL);
                 DebugMsgFT(LogInit,'Desc      : '+nEntry^.rsseDescription);
-                DebugMsgFT(LogInit,'Date      : '+nEntry^.rssePublishDate);
+                DebugMsgFT(LogInit,'Date      : '+DateTimeToStr(nEntry^.rssePublishDate));
                 DebugMsgFT(LogInit,'Duration  : '+IntToStr(nEntry^.rsseDuration));
                 DebugMsgFT(LogInit,'Thumb     : '+nEntry^.rsseThumbnail);
                 DebugMsgFT(LogInit,'Order     : '+IntToStr(nEntry^.rssePublishOrder)+CRLF);
                 {$ENDIF}
                 rssList.Add(nEntry);
               End
-              Else Dispose(nEntry);
+                else
+              Begin
+                {$IFDEF LOCALTRACE}
+                DebugMsgFT(LogInit,'Invalid RSS Entry:');
+                DebugMsgFT(LogInit,'Title     : '+nEntry^.rsseTitle);
+                DebugMsgFT(LogInit,'URL       : '+nEntry^.rsseURL);
+                DebugMsgFT(LogInit,'Desc      : '+nEntry^.rsseDescription);
+                DebugMsgFT(LogInit,'Date      : '+DateTimeToStr(nEntry^.rssePublishDate));
+                DebugMsgFT(LogInit,'Duration  : '+IntToStr(nEntry^.rsseDuration));
+                DebugMsgFT(LogInit,'Thumb     : '+nEntry^.rsseThumbnail);
+                DebugMsgFT(LogInit,'Order     : '+IntToStr(nEntry^.rssePublishOrder)+CRLF);
+                {$ENDIF}
+                Dispose(nEntry);
+              End;
             End;
           Until Found = False;
-        End;  
+        End;
       End;
     End;
   End;

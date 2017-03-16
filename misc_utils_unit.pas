@@ -1,3 +1,4 @@
+{$I RSS_PLUGIN_DEFINES.INC}
 unit misc_utils_unit;
 
 
@@ -29,9 +30,7 @@ procedure DebugMsgFT(FileName : WideString; Txt : WideString);
 
 function  DownloadFileToStringList(URL : String; fStream : TStringList; var Status : String; var ErrorCode: Integer; TimeOut : DWord) : Boolean; overload;
 function  DownloadFileToStream(URL : String; fStream : TMemoryStream; var Status : String; var ErrorCode: Integer; TimeOut : DWord) : Boolean; overload;
-//function  DownloadFileToStream(URL : String; fStream : TMemoryStream) : Boolean; overload;
 function  DownloadImageToFile(URL : String; ImageFilePath, ImageFileName : WideString; var Status : String; var ErrorCode: Integer; TimeOut : DWord) : Boolean; overload;
-//function  DownloadImageToFile(URL : String; ImageFilePath, ImageFileName : WideString) : Boolean; overload;
 procedure DownloadImageToFileThreaded(URL : String; ImageFilePath, ImageFileName : WideString; var Status : String; var ErrorCode: Integer; TimeOut : DWord; var SuccessCode, DownloadEnded : Boolean);
 
 function  URLEncodeUTF8(stInput : widestring) : string;
@@ -45,6 +44,8 @@ function  ConvertCharsToSpaces(S : WideString) : WideString;
 
 function  DecodeTextTags(S : WideString; RemoveSuffix : Boolean) : WideString;
 function  EncodeTextTags(S : WideString; AddSuffix : Boolean) : WideString;
+
+function  StripURLHash(sURL : String) : String;
 
 procedure FileExtIntoStringList(fPath,fExt : WideString; fList : TTNTStrings; Recursive : Boolean);
 
@@ -492,6 +493,19 @@ end;
 function ConvertCharsToSpaces(S : WideString) : WideString;
 begin
   Result := TNT_WideStringReplace(TNT_WideStringReplace(TNT_WideStringReplace(S,'-', ' ', [rfReplaceAll]), '.', ' ', [rfReplaceAll]), '_', ' ', [rfReplaceAll]);
+end;
+
+
+function  StripURLHash(sURL : String) : String;
+var
+  iPos : Integer;
+begin
+  iPos := Pos('#',sURL);
+  If iPos > 0 then
+  Begin
+    Result := Copy(sURL,1,iPos-1);
+  End
+  Else Result := sURL;
 end;
 
 

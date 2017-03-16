@@ -13,7 +13,9 @@
       ********************************************************************}
 
 
-      { And the TNT Delphi Unicode Controls (compatiable with the last free version)
+      { This Plugin uses the INDY 10 library to convert RFC822 dates to TDateTime.
+
+        And the TNT Delphi Unicode Controls (compatiable with the last free version)
         to handle a few unicode tasks.
 
         And optionally, the FastMM/FastCode/FastMove libraries:
@@ -146,9 +148,9 @@ end;
 
 // Called by Zoom Player to show the plugin's configuration dialog.
 Procedure Configure(CenterOnWindow : HWND; CategoryID : PChar); stdcall;
-var
+{var
   CenterOnRect : TRect;
-  tmpInt: Integer;
+  tmpInt: Integer;}
 begin
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Configure (before)');{$ENDIF}
   {If GetWindowRect(CenterOnWindow,CenterOnRect) = False then
@@ -177,6 +179,9 @@ var
   mStream        : TMemoryStream;
   dlStatus       : String;
   dlError        : Integer;
+  dlResult       : Boolean;
+  iPos           : Integer;
+  S              : String;
 
 begin
   // CategoryInput = URL
@@ -195,10 +200,9 @@ begin
     Exit;
   End;
 
-  sCatInput    := CategoryData^.CategoryInput;
+  sCatInput    := StripURLHash(CategoryData^.CategoryInput);
   sCatInputLC  := Lowercase(sCatInput);
   sChannelID   := '';
-  CategoryData^.CategoryID    := PChar(sCatInput);
   CategoryData^.CategoryTitle := '';
   CategoryData^.CategoryThumb := '';
   CategoryData^.Scrapers      := '';
@@ -207,7 +211,21 @@ begin
   CategoryData^.DefaultFlags  := catFlagThumbView or catFlagThumbCrop or catFlagTitleFromMetaData;
 
   mStream := TMemoryStream.Create;
-  If DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000) = True then
+  dlResult := DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000);
+
+  If dlResult = False then
+  Begin
+    // Maybe unknown protocol? try enforcing http
+    iPos := Pos('://',sCatInput);
+    S := Copy(sCatInputLC,1,iPos-1);
+    If (S <> 'http') and (S <> 'https') then
+    Begin
+      sCatInput := 'http'+Copy(sCatInput,iPos,Length(sCatInput)-(iPos-1));
+      dlResult  := DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000);
+    End;
+  End;
+
+  If dlResult = True then
   Begin
     mStream.Position := 0;
     If ParseRSSStream(mStream,rssTitle,rssDescription,rssImage,nil) = True then
@@ -217,58 +235,81 @@ begin
       Result := S_OK;
     End;
   End;
+
+  CategoryData^.CategoryID    := PChar(sCatInput);
   mStream.Free;
 
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'CreateCategory, Result : '+IntToHex(Result,8)+' (after)');{$ENDIF}
 end;
 
 
+function SortByDate(Item1, Item2: Pointer) : Integer;
+begin
+  Result := Trunc(PRSSEntryRecord(Item2)^.rssePublishDate-PRSSEntryRecord(Item1)^.rssePublishDate);
+end;
+
+
+function RSSrecordToString(Entry : PRSSEntryRecord) : WideString;
+const
+  niAudio     = 2;
+  niVideo     = 3;
+
+var
+  sDuration   : String;
+  sMediaType  : String;
+  sExt        : String;
+
+Begin
+  // [MetaEntry1]  :  // Displayed in the meta-data's Title area
+  // [MetaEntry2]  :  // Displayed in the meta-data's Date area
+  // [MetaEntry3]  :  // Displayed in the meta-data's Duration
+  // [MetaEntry4]  :  // Displayed in the meta-data's Genre/Type area
+  // [MetaEntry5]  :  // Displayed in the meta-data's Overview/Description area
+  // [MetaEntry6]  :  // Displayed in the meta-data's Actors/Media info area
+  // [MetaRating]  :  // Meta rating, value of 0-100, 0=disabled
+
+  If Entry^.rsseDuration > 0 then sDuration := EncodeDuration(Entry^.rsseDuration) else sDuration := '';
+
+  sMediaType := '';
+  sExt       := Lowercase(ExtractFileExt(Entry^.rsseURL));
+
+  // Force media type for popular formats, otherwise media type is based on the category 
+  If (sExt = '.mp3') or (sExt = '.weba') or (sExt = '.aac') or (sExt = '.flac') or (sExt = '.ogg') then sMediaType := '"MediaType='+IntToStr(niAudio)+'",';
+  If (sExt = '.mp4') or (sExt = '.mkv')  or (sExt = '.wmv') or (sExt = '.webm') or (sExt = '.avi') then sMediaType := '"MediaType='+IntToStr(niVideo)+'",';
+
+  Result := '"Type='        +IntToStr(Entry^.rsseType)+'",'+sMediaType+
+            '"Path='        +Entry^.rsseURL+'",'+
+            '"Title='       +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
+            '"Description=' +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
+            '"Thumbnail='   +Entry^.rsseThumbnail+'",'+
+            '"Date='        +FloatToStr(Entry^.rssePublishOrder)+'",'+
+            '"Duration='    +IntToStr(Entry^.rsseDuration)+'",'+
+            '"Date='        +FloatToStr(Entry^.rssePublishDate)+'",'+
+            '"MetaEntry1='  +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
+            '"MetaEntry2='  +DateToStr(Entry^.rssePublishDate)+'",'+
+            '"MetaEntry3='  +sDuration+'",'+
+            '"MetaEntry4=!",'+
+            '"MetaEntry5='  +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
+            '"MetaEntry6=!"';
+End;
+
+
+
 Function GetList(CategoryID : PChar; CategoryPath : PChar; ItemList : PCategoryItemList) : Integer; stdcall;
 var
-  S,S1        : String;
-  I,I1        : Integer;
-  sList       : TStringList;
+  I           : Integer;
   dlStatus    : String;
   dlError     : Integer;
   sItemList   : WideString;
-  sIDList     : String;
 
   mStream        : TMemoryStream;
   rssImage       : String;
   rssTitle       : WideString;
   rssDescription : WideString;
   rssList        : TList;
+  sUTF8          : String;
+  iLen           : Integer;
 
-
-
-  function RSSrecordToString(Entry : PRSSEntryRecord) : WideString;
-  var
-    sDuration   : String;
-  Begin
-    // [MetaEntry1]  :  // Displayed in the meta-data's Title area
-    // [MetaEntry2]  :  // Displayed in the meta-data's Date area
-    // [MetaEntry3]  :  // Displayed in the meta-data's Duration
-    // [MetaEntry4]  :  // Displayed in the meta-data's Genre/Type area
-    // [MetaEntry5]  :  // Displayed in the meta-data's Overview/Description area
-    // [MetaEntry6]  :  // Displayed in the meta-data's Actors/Media info area
-    // [MetaRating]  :  // Meta rating, value of 0-100, 0=disabled
-
-    If Entry^.rsseDuration > 0 then sDuration := EncodeDuration(Entry^.rsseDuration) else sDuration := '';
-
-    Result := '"Type='        +IntToStr(Entry^.rsseType)+'",'+
-              '"Path='        +Entry^.rsseURL+'",'+
-              '"Title='       +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
-              '"Description=' +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
-              '"Thumbnail='   +Entry^.rsseThumbnail+'",'+
-              '"Date='        +FloatToStr(Entry^.rssePublishOrder)+'",'+
-              '"Duration='    +IntToStr(Entry^.rsseDuration)+'",'+
-              '"MetaEntry1='  +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
-              '"MetaEntry2=!",'+
-              '"MetaEntry3='  +sDuration+'",'+
-              '"MetaEntry4='  +EncodeTextTags(Entry^.rssePublishDate,True)+'",'+
-              '"MetaEntry5='  +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
-              '"MetaEntry6=!"';
-  End;
 
 
 begin
@@ -283,20 +324,26 @@ begin
 
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'GetList (before)');{$ENDIF}
   Result             := E_FAIL;
-  ItemList^.catItems := '';
 
   rssList := TList.Create;
 
   mStream := TMemoryStream.Create;
-  If DownloadFileToStream(CategoryID,mStream,dlStatus,dlError,2000) = True then
+  If DownloadFileToStream(CategoryID,mStream,dlStatus,dlError,2500) = True then
   Begin
     mStream.Position := 0;
+    {$IFDEF FEEDDUMP}
+    SetLength(S,mStream.Size);
+    mStream.Read(S[1],mStream.Size);
+    DebugMsgFT(LogInit,'RSS Source: '+CRLF+'-----------------------'+CRLF+S+CRLF+'-----------------------');
+    mStream.Position := 0;
+    {$ENDIF}
     If ParseRSSStream(mStream,rssTitle,rssDescription,rssImage,rssList) = True then
     Begin
       {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'ParseRSSStream returned '+IntToStr(rssList.Count)+' entries');{$ENDIF}
       If rssList.Count > 0 then
       Begin
         // Add a 'refresh' entry
+        rssList.Sort(@SortByDate);
 
         For I := 0 to rssList.Count-1 do
         Begin
@@ -308,273 +355,25 @@ begin
         End;
 
         // Add a refesh entry
-        sItemList := sItemList+'|"Type=3",Path="Refresh"';
+        sUTF8 := UTF8Encode(sItemList+'|"Type=3",Path="Refresh"');
+        iLen  := Length(sUTF8);
 
-        ItemList^.catItems := PChar(UTF8Encode(sItemList));
+        If iLen < 1024*1024 then
+        Begin
+          Move(sUTF8[1],ItemList^.catItems^,iLen);
+          //ItemList^.catItems := PChar(sUTF8);
+        End
+        {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'RSS parsed results larger than the 1mb buffer!!!'){$ENDIF};
 
         Result := S_OK;
       End;
-    End;
-  End;
+    End
+    {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'Parse failure!'){$ENDIF};
+  End
+  {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'Download failed, Status "'+dlStatus+'", Error #'+IntToHex(dlError,8)+' (after)'){$ENDIF};
 
   mStream.Free;
   rssList.Free;
-
-
-  (*
-  sList   := TStringList.Create;
-  ytvList := TList.Create;
-  {$IFDEF SEARCHMODE}
-  //https://www.googleapis.com/youtube/v3/search?part=snippet,id&q=[Search]&type=video&key={YOUR_API_KEY}
-  sURL    := 'https://www.googleapis.com/youtube/v3/search?key='+APIKey+'&q='+URLEncodeUTF8(UTF8Decode(CategoryID))+'&part=snippet,id&order=relevance&type=video&maxResults='+IntToStr(YouTube_VideoFetch);
-  {$ELSE}
-    {$IFDEF TRENDINGMODE}
-    S := CategoryID;
-    I := Pos(',',S);
-    If I > 0 then
-    Begin
-      iCatType   := StrToIntDef(Copy(S,I+1,Length(S)-I),-1);
-      sCatRegion := Copy(S,1,I-1);
-    End
-      else
-    Begin
-      iCatType   := -1;
-      sCatRegion := S;
-    End;
-
-    // Trending in country with specific category
-    //https://www.googleapis.com/youtube/v3/videos?part=contentDetails&chart=mostPopular&videoCategoryId=10&maxResults=25&key=API_KEY
-
-    // Trending in country
-    //https://www.googleapis.com/youtube/v3/videos?part=contentDetails&chart=mostPopular&regionCode=IN&maxResults=25&key=API_KEY
-    If sCatRegion <> strWorldwide then S := '&regionCode='+sCatRegion else S := '';
-    If iCatType > -1 then S := S+'&videoCategoryId='+IntToStr(iCatType);
-    sURL    := 'https://www.googleapis.com/youtube/v3/videos?part=snippet,id&chart=mostPopular'+S+'&maxResults='+IntToStr(YouTube_VideoFetch)+'&key='+APIKey;
-    {$ELSE}
-    //https://www.googleapis.com/youtube/v3/search?key=[key]&channelId=UClFSU9_bUb4Rc6OYfTt5SPw&part=snippet,id&order=date&maxResults=3
-    sURL    := 'https://www.googleapis.com/youtube/v3/search?key='+APIKey+'&channelId='+CategoryID+'&part=snippet,id&order=date&type=video&maxResults='+IntToStr(YouTube_VideoFetch);
-    {$ENDIF}
-  {$ENDIF}
-  sToken  := CategoryPath;
-  If sToken <> '' then sURL := sURL+'&pageToken='+sToken;
-  sToken  := '';
-
-  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Search URL : '+sURL);{$ENDIF}
-  If DownloadFileToStringList(sURL,sList,dlStatus,dlError,2000) = True then
-  Begin
-    sJSON := StringReplace(sList.Text,CRLF,'',[rfReplaceAll]);
-    {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'JSON Search Snippet+ID : '+CRLF+'---'+CRLF+sList.Text+CRLF+'---'+CRLF);{$ENDIF}
-
-    jBase := SO(sJSON);
-    If jBase <> nil then
-    Begin
-      sToken := jBase.S['nextPageToken'];
-      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Next page token : '+sToken);{$ENDIF}
-      jItems := jBase.O['items'];
-      If jItems <> nil then
-      Begin
-        If jItems.AsArray.Length > 0 then For I := 0 to jItems.AsArray.Length-1 do
-        Begin
-          New(ytvEntry);
-          WipeYTVentry(ytvEntry);
-
-          jEntry := jItems.AsArray.O[I];
-          If jEntry <> nil then
-          Begin
-            {$IFDEF TRENDINGMODE}
-            ytvEntry^.ytvPath := jEntry.S['id'];
-            {$ELSE}
-            jSnippet := jEntry.O['id'];
-            If jSnippet <> nil then
-            Begin
-              ytvEntry^.ytvPath := jSnippet.S['videoId'];
-              jSnippet.Clear(True);
-              jSnippet := nil;
-            End
-            {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON id object returned nil'){$ENDIF};
-            {$ENDIF}
-
-            jSnippet := jEntry.O['snippet'];
-            If jSnippet <> nil then
-            Begin
-              ytvEntry^.ytvTitle       := UTF8StringToWideString(jSnippet.S['title']);
-              ytvEntry^.ytvDescription := UTF8StringToWideString(jSnippet.S['description']);
-              S := jSnippet.S['publishedAt'];
-              Try
-                // format: 2016-12-04T20:00:02.000Z
-                ytvEntry^.ytvPublished := EncodeDateTime(
-                    StrToInt(Copy(S, 1,4)),  // Year
-                    StrToInt(Copy(S, 6,2)),  // Month
-                    StrToInt(Copy(S, 9,2)),  // Day
-                    StrToInt(Copy(S,12,2)),  // Hour
-                    StrToInt(Copy(S,15,2)),  // Minute
-                    StrToInt(Copy(S,18,2)),  // Second
-                    StrToInt(Copy(S,21,3))); // MS
-              Except
-                {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Published Exception on : '+S);{$ENDIF}
-                ytvEntry^.ytvPublished := 0;;
-              End;
-
-              ytvEntry^.ytvThumbnail := GetBestThumbnailURL(jSnippet);
-
-              jSnippet.Clear(True);
-              jSnippet := nil;
-            End
-            {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON snippet object returned nil'){$ENDIF};
-
-            // Add entry to list
-            If (ytvEntry^.ytvPath <> '') and (ytvEntry^.ytvTitle <> '') then
-            Begin
-              ytvList.Add(ytvEntry);
-            End
-            Else Dispose(ytvEntry);
-
-            jEntry.Clear(True);
-            jEntry := nil;
-          End
-          {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON entry object returned nil'){$ENDIF};
-        End;
-        jItems.Clear(True);
-        jItems := nil;
-      End
-      {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON items object returned nil'){$ENDIF};
-      jBase.Clear(True);
-      jBase := nil;
-    End
-    {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON base object returned nil'){$ENDIF};
-  End
-  {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'ERROR, download failed:'+CRLF+sList.Text){$ENDIF};
-
-  // To get the video duration, we must make a second call:
-  // https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=[videoID],[videoID],[videoID]&key={Your API KEY}
-
-
-  If (ytvList.Count > 0) then
-  Begin
-    // Get a list of video IDs
-    sList.Clear;
-    For I := 0 to ytvList.Count-1 do
-    Begin
-      If I = 0 then
-        sIDList := PYouTubeVideoRecord(ytvList[I])^.ytvPath else
-        sIDList := sIDList+','+PYouTubeVideoRecord(ytvList[I])^.ytvPath;
-    End;
-
-    sURL := 'https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics&id='+sIDList+'&key='+APIKey;
-    {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Video ID Search URL : '+sURL);{$ENDIF}
-    If DownloadFileToStringList(sURL,sList,dlStatus,dlError,2000) = True then
-    Begin
-      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'JSON : '+CRLF+'---'+CRLF+sList.Text+CRLF+'---'+CRLF);{$ENDIF}
-      sJSON := StringReplace(sList.Text,CRLF,'',[rfReplaceAll]);
-
-      jBase := SO(sJSON);
-      If jBase <> nil then
-      Begin
-        jItems := jBase.O['items'];
-        If jItems <> nil then
-        Begin
-          If jItems.AsArray.Length > 0 then For I := 0 to jItems.AsArray.Length-1 do
-          Begin
-            jEntry := jItems.AsArray.O[I];
-            If jEntry <> nil then
-            Begin
-              sID := jEntry.S['id'];
-              For I1 := 0 to ytvList.Count-1 do If sID = PYouTubeVideoRecord(ytvList[I1])^.ytvPath then
-              Begin
-                jSnippet := jEntry.O['contentDetails'];
-                If jSnippet <> nil then
-                Begin
-                  S := jSnippet.S['duration'];
-                  PYouTubeVideoRecord(ytvList[I1])^.ytvDuration := YouTubeISO8601toSeconds(S);
-                  jSnippet.Clear(True);
-                  jSnippet := nil;
-                End
-                {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON contentDetails object returned nil'){$ENDIF};
-
-                jSnippet := jEntry.O['statistics'];
-                If jSnippet <> nil then
-                Begin
-                  PYouTubeVideoRecord(ytvList[I1])^.ytvViewCount    := jSnippet.I['viewCount'];
-                  PYouTubeVideoRecord(ytvList[I1])^.ytvLikeCount    := jSnippet.I['likeCount'];
-                  PYouTubeVideoRecord(ytvList[I1])^.ytvDislikeCount := jSnippet.I['dislikeCount'];
-                  jSnippet.Clear(True);
-                  jSnippet := nil;
-                End
-                {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON statistics object returned nil'){$ENDIF};
-                Break;
-              End;
-              jEntry.Clear(True);
-              jEntry := nil;
-            End
-            {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON entry object returned nil'){$ENDIF};
-          End;
-          jItems.Clear(True);
-          jItems := nil;
-        End
-        {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON items object returned nil'){$ENDIF};
-
-        jBase.Clear(True);
-        jBase := nil;
-      End
-      {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'JSON items object returned nil'){$ENDIF};
-    End;
-
-
-    // Add a 'refresh' entry
-    New(ytvEntry);
-    WipeYTVentry(ytvEntry);
-    ytvEntry^.ytvPath := 'refresh';
-    ytvEntry^.ytvType := 3;
-    ytvList.Insert(0,ytvEntry);
-
-    // Add a 'next page' entry
-    If (sToken <> '') then
-    Begin
-      New(ytvEntry);
-      WipeYTVentry(ytvEntry);
-      ytvEntry^.ytvPath := sToken;
-      ytvEntry^.ytvType := 2;
-      ytvList.Add(ytvEntry);
-    End;
-
-    For I := 0 to ytvList.Count-1 do If (PYouTubeVideoRecord(ytvList[I])^.ytvDuration > 0) or (PYouTubeVideoRecord(ytvList[I])^.ytvType <> 0) then
-    Begin
-      If I = 0 then
-        sItemList := YTVrecordToString(PYouTubeVideoRecord(ytvList[I])) else
-        sItemList := sItemList+'|'+YTVrecordToString(PYouTubeVideoRecord(ytvList[I]));
-      {$IFDEF LOCALTRACE}
-      With PYouTubeVideoRecord(ytvList[I])^ do
-      Begin
-        DebugMsgFT  (LogInit,'Type         : '+IntToStr(ytvType));
-        If ytvType = 0 then
-        Begin
-          DebugMsgFT(LogInit,'Path         : https://www.youtube.com/watch?v='+ytvPath);
-          DebugMsgFT(LogInit,'Title        : '+ytvTitle);
-          DebugMsgFT(LogInit,'Description  : '+ytvDescription);
-          DebugMsgFT(LogInit,'Thumbnail    : '+ytvThumbnail);
-          DebugMsgFT(LogInit,'ViewCount    : '+IntToStr(ytvViewCount));
-          DebugMsgFT(LogInit,'LikeCount    : '+IntToStr(ytvLikeCount));
-          DebugMsgFT(LogInit,'DislikeCount : '+IntToStr(ytvDislikeCount));
-          DebugMsgFT(LogInit,'Duration     : '+IntToStr(ytvDuration)+' seconds');
-          If ytvPublished > 0 then
-            DebugMsgFT(LogInit,'Published    : '+DateTimeToStr(ytvPublished)+CRLF) else
-            DebugMsgFT(LogInit,'Published    : Unknown!'+CRLF);
-        End
-          else
-        Begin
-          DebugMsgFT(LogInit,'Path         : '+ytvPath+CRLF);
-        End;
-      End;
-      {$ENDIF}
-    End;
-
-    ItemList^.catItems := PChar(UTF8Encode(sItemList));
-    Result := S_OK;
-  End;
-
-  For I := 0 to ytvList.Count-1 do Dispose(PYouTubeVideoRecord(ytvList[I]));
-  ytvList.Free;
-  sList.Free; *)
 
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'GetList (after)');{$ENDIF}
 end;
@@ -582,11 +381,6 @@ end;
 
 // The string to display for the users when asking for input, in our case, a youtube channel URL
 function GetInputID : PChar; stdcall;
-var
-  I     : Integer;
-  sList : TStringList;
-  S     : String;
-
 begin
   Result := 'RSS URL :';
 end;
@@ -612,5 +406,7 @@ exports
 
 
 begin
+  // Required to notify the memory manager that this DLL is being called from a multi-threaded application!
+  IsMultiThread := True;
 end.
 
