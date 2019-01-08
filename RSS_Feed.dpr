@@ -55,6 +55,7 @@ Type
     CategoryID    : PChar;
     CategoryTitle : PChar;
     CategoryThumb : PChar;
+    DataPath      : PChar;
     Scrapers      : PChar;
     TextLines     : Integer;
     DefaultFlags  : Integer;
@@ -92,7 +93,8 @@ Type
 
 Const
   // Settings Registry Path and API Key
-  //PluginRegKey               : String = 'Software\VirtuaMedia\ZoomPlayer\MediaLibraryPlugins\YouTube Channel';
+  //PluginRegKey               : String = 'Software\VirtuaMedia\ZoomPlayer\MediaLibraryPlugins\RSS Feed';
+  RSS_MAX_ENTRIES            : Integer = 5000;
 
   // Category flags
   catFlagThumbView           : Integer =    1;     // Enable thumb view (disabled = list view)
@@ -118,6 +120,7 @@ Const
   srDuration                           = 5;
   srRandom                             = 6;
 
+  rssExt                     : String  = '.rss';  
 
 // Called by Zoom Player to free any resources allocated in the DLL prior to unloading the DLL.
 Procedure FreePlugin; stdcall;
@@ -133,6 +136,84 @@ begin
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Init Plugin (before)');{$ENDIF}
   Result := True;
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Init Plugin (after)');{$ENDIF}
+end;
+
+
+// Called by Zoom Player to verify if the plugin can refresh itself (name/thumbnail).
+function CanRefresh : Bool; stdcall;
+begin
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'CanRefresh (before)');{$ENDIF}
+  Result := True;
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'CanRefresh (after)');{$ENDIF}
+end;
+
+
+// Called by Zoom Player to show the refresh the category (name/thumbnail).
+Function Refresh(CategoryData : PCategoryPluginRecord) : Integer; stdcall;
+var
+  sCatInput      : String;
+  sCatInputLC    : String;
+  sChannelID     : String;
+  sCatDataPath   : WideString;
+  rssImage       : String;
+  rssTitle       : WideString;
+  rssDescription : WideString;
+  mStream        : TMemoryStream;
+  dlStatus       : String;
+  dlError        : Integer;
+  dlResult       : Boolean;
+  iPos           : Integer;
+  S              : String;
+
+begin
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Refresh (before)');{$ENDIF}
+  Result       := E_FAIL;
+  If CategoryData = nil then
+  Begin
+    {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Exit on "CategoryData = nil"');{$ENDIF}
+    Exit;
+  End;
+
+  sCatInput    := StripURLHash(CategoryData^.CategoryInput);
+  sCatInputLC  := Lowercase(sCatInput);
+  sCatDataPath := UTF8Decode(CategoryData^.DataPath);
+  sChannelID   := '';
+  CategoryData^.CategoryTitle := '';
+  CategoryData^.CategoryThumb := '';
+  CategoryData^.Scrapers      := '';
+  CategoryData^.TextLines     := 2;
+  CategoryData^.SortMode      := srDate;
+  CategoryData^.DefaultFlags  := catFlagThumbView or catFlagThumbCrop or catFlagTitleFromMetaData {or catFlagNoScraping}; // Scraping is required for thumbnails
+
+  mStream  := TMemoryStream.Create;
+  dlResult := DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000);
+
+  If dlResult = False then
+  Begin
+    // Maybe unknown protocol? try enforcing http
+    iPos := Pos('://',sCatInput);
+    S := Copy(sCatInputLC,1,iPos-1);
+    If (S <> 'http') and (S <> 'https') then
+    Begin
+      sCatInput := 'http'+Copy(sCatInput,iPos,Length(sCatInput)-(iPos-1));
+      dlResult  := DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000);
+    End;
+  End;
+
+  If dlResult = True then
+  Begin
+    mStream.Position := 0;
+    If ParseRSSStream(mStream,rssTitle,rssDescription,rssImage,nil) = True then
+    Begin
+      CategoryData^.CategoryTitle := PChar(UTF8Encode(rssTitle));
+      CategoryData^.CategoryThumb := PChar(rssImage);
+      Result := S_OK;
+    End;
+  End;
+
+  CategoryData^.CategoryID    := PChar(sCatInput);
+  mStream.Free;
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Refresh (after)');{$ENDIF}
 end;
 
 
@@ -173,6 +254,7 @@ var
   sCatInput      : String;
   sCatInputLC    : String;
   sChannelID     : String;
+  sCatDataPath   : WideString;
   rssImage       : String;
   rssTitle       : WideString;
   rssDescription : WideString;
@@ -202,15 +284,16 @@ begin
 
   sCatInput    := StripURLHash(CategoryData^.CategoryInput);
   sCatInputLC  := Lowercase(sCatInput);
+  sCatDataPath := UTF8Decode(CategoryData^.DataPath);
   sChannelID   := '';
   CategoryData^.CategoryTitle := '';
   CategoryData^.CategoryThumb := '';
   CategoryData^.Scrapers      := '';
   CategoryData^.TextLines     := 2;
   CategoryData^.SortMode      := srDate;
-  CategoryData^.DefaultFlags  := catFlagThumbView or catFlagThumbCrop or catFlagTitleFromMetaData;
+  CategoryData^.DefaultFlags  := catFlagThumbView or catFlagThumbCrop or catFlagTitleFromMetaData {or catFlagNoScraping}; // Scraping is required for thumbnails
 
-  mStream := TMemoryStream.Create;
+  mStream  := TMemoryStream.Create;
   dlResult := DownloadFileToStream(sCatInput,mStream,dlStatus,dlError,2000);
 
   If dlResult = False then
@@ -243,72 +326,54 @@ begin
 end;
 
 
-function SortByDate(Item1, Item2: Pointer) : Integer;
+function DeleteCategory(CenterOnWindow : HWND; CategoryID,DataPath : PChar) : Integer; stdcall;
+var
+  sDataPath      : WideString;
 begin
-  Result := Trunc(PRSSEntryRecord(Item2)^.rssePublishDate-PRSSEntryRecord(Item1)^.rssePublishDate);
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'DeleteCategory (before)');{$ENDIF}
+  sDataPath := UTF8Decode(DataPath);
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'RSS_Feed ID "'+sDataPath+'"');{$ENDIF}
+
+  // Erase RSS Category cache for this feed
+  If WideFileExists(sDataPath+EncodeFileName(CategoryID)+rssExt) = True then
+  Begin
+    {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Erasing "'+sDataPath+EncodeFileName(CategoryID)+rssExt+'" (before)');{$ENDIF}
+    EraseFile(sDataPath+EncodeFileName(CategoryID)+rssExt);
+    {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Erasing (after)');{$ENDIF}
+  End
+  {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'File not found "'+sDataPath+EncodeFileName(CategoryID)+rssExt+'"'){$ENDIF};
+
+  Result := S_OK;
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'DeleteCategory (after)');{$ENDIF}
 end;
 
 
-function RSSrecordToString(Entry : PRSSEntryRecord) : WideString;
-const
-  niAudio     = 2;
-  niVideo     = 3;
+function SortByDate(Item1, Item2: Pointer) : Integer;
+begin
+  Result := Trunc((PRSSEntryRecord(Item2)^.rssePublishDate*1000)-(PRSSEntryRecord(Item1)^.rssePublishDate*1000));
+  If Result = 0 then Result := WideCompareText(PRSSEntryRecord(Item2)^.rsseURL,PRSSEntryRecord(Item1)^.rsseURL);
+end;
 
+
+Function GetList(CategoryID, CategoryPath, DataPath : PChar; ItemList : PCategoryItemList) : Integer; stdcall;
 var
-  sDuration   : String;
-  sMediaType  : String;
-  sExt        : String;
-
-Begin
-  // [MetaEntry1]  :  // Displayed in the meta-data's Title area
-  // [MetaEntry2]  :  // Displayed in the meta-data's Date area
-  // [MetaEntry3]  :  // Displayed in the meta-data's Duration
-  // [MetaEntry4]  :  // Displayed in the meta-data's Genre/Type area
-  // [MetaEntry5]  :  // Displayed in the meta-data's Overview/Description area
-  // [MetaEntry6]  :  // Displayed in the meta-data's Actors/Media info area
-  // [MetaRating]  :  // Meta rating, value of 0-100, 0=disabled
-
-  If Entry^.rsseDuration > 0 then sDuration := EncodeDuration(Entry^.rsseDuration) else sDuration := '';
-
-  sMediaType := '';
-  sExt       := Lowercase(ExtractFileExt(Entry^.rsseURL));
-
-  // Force media type for popular formats, otherwise media type is based on the category 
-  If (sExt = '.mp3') or (sExt = '.weba') or (sExt = '.aac') or (sExt = '.flac') or (sExt = '.ogg') then sMediaType := '"MediaType='+IntToStr(niAudio)+'",';
-  If (sExt = '.mp4') or (sExt = '.mkv')  or (sExt = '.wmv') or (sExt = '.webm') or (sExt = '.avi') then sMediaType := '"MediaType='+IntToStr(niVideo)+'",';
-
-  Result := '"Type='        +IntToStr(Entry^.rsseType)+'",'+sMediaType+
-            '"Path='        +Entry^.rsseURL+'",'+
-            '"Title='       +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
-            '"Description=' +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
-            '"Thumbnail='   +Entry^.rsseThumbnail+'",'+
-            '"Date='        +FloatToStr(Entry^.rssePublishOrder)+'",'+
-            '"Duration='    +IntToStr(Entry^.rsseDuration)+'",'+
-            '"Date='        +FloatToStr(Entry^.rssePublishDate)+'",'+
-            '"MetaEntry1='  +EncodeTextTags(Entry^.rsseTitle,True)+'",'+
-            '"MetaEntry2='  +DateToStr(Entry^.rssePublishDate)+'",'+
-            '"MetaEntry3='  +sDuration+'",'+
-            '"MetaEntry4=!",'+
-            '"MetaEntry5='  +EncodeTextTags(Entry^.rsseDescription,True)+'",'+
-            '"MetaEntry6=!"';
-End;
-
-
-
-Function GetList(CategoryID : PChar; CategoryPath : PChar; ItemList : PCategoryItemList) : Integer; stdcall;
-var
-  I           : Integer;
-  dlStatus    : String;
-  dlError     : Integer;
-  sItemList   : WideString;
+  I              : Integer;
+  dlStatus       : String;
+  dlError        : Integer;
+  sItemList      : WideString;
 
   mStream        : TMemoryStream;
+  mRSSStream     : TMemoryStream;
   rssImage       : String;
   rssTitle       : WideString;
   rssDescription : WideString;
   rssList        : TList;
+  sDataPath      : WideString;
   sUTF8          : String;
-  iLen           : Integer;
+  //iLen           : Integer;
+  dlResult       : Boolean;
+  //parseResult    : Boolean;
+
 
 
 
@@ -325,54 +390,96 @@ begin
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'GetList (before)');{$ENDIF}
   Result             := E_FAIL;
 
-  rssList := TList.Create;
+  rssList    := TList.Create;
+  mRSSStream := TMemoryStream.Create;
+  sDataPath  := UTF8Decode(DataPath);
 
-  mStream := TMemoryStream.Create;
-  If DownloadFileToStream(CategoryID,mStream,dlStatus,dlError,2500) = True then
+  {$IFDEF FAKESOURCE}
+  mRSSStream.LoadFromFile('d:\showrss.xml');
+  dlResult := True;
+  {$ELSE}
+  dlResult := DownloadFileToStream(CategoryID,mRSSStream,dlStatus,dlError,2500);
+  {$ENDIF}
+
+
+  LoadRSSListFromFile(rssList,sDataPath+EncodeFileName(CategoryID)+rssExt);
+  {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,IntToStr(rssList.Count)+' entries loaded from cache');{$ENDIF}
+
+  If dlResult = True then
   Begin
-    mStream.Position := 0;
+    mRSSStream.Position := 0;
     {$IFDEF FEEDDUMP}
-    SetLength(S,mStream.Size);
-    mStream.Read(S[1],mStream.Size);
-    DebugMsgFT(LogInit,'RSS Source: '+CRLF+'-----------------------'+CRLF+S+CRLF+'-----------------------');
-    mStream.Position := 0;
+    SetLength(sUTF8,mRSSStream.Size);
+    mRSSStream.Read(sUTF8[1],mRSSStream.Size);
+    DebugMsgFT(LogInit,'RSS Source: '+CRLF+'-----------------------'+CRLF+sUTF8+CRLF+'-----------------------');
+    mRSSStream.Position := 0;
     {$ENDIF}
-    If ParseRSSStream(mStream,rssTitle,rssDescription,rssImage,rssList) = True then
-    Begin
-      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'ParseRSSStream returned '+IntToStr(rssList.Count)+' entries');{$ENDIF}
-      If rssList.Count > 0 then
-      Begin
-        // Add a 'refresh' entry
-        rssList.Sort(@SortByDate);
 
-        For I := 0 to rssList.Count-1 do
-        Begin
-          If I = 0 then
-            sItemList := RSSrecordToString(PRSSEntryRecord(rssList[I])) else
-            sItemList := sItemList+'|'+RSSrecordToString(PRSSEntryRecord(rssList[I]));
-
-          Dispose(PRSSEntryRecord(rssList[I]));
-        End;
-
-        // Add a refesh entry
-        sUTF8 := UTF8Encode(sItemList+'|"Type=3",Path="Refresh"');
-        iLen  := Length(sUTF8);
-
-        If iLen < 1024*1024 then
-        Begin
-          Move(sUTF8[1],ItemList^.catItems^,iLen);
-          //ItemList^.catItems := PChar(sUTF8);
-        End
-        {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'RSS parsed results larger than the 1mb buffer!!!'){$ENDIF};
-
-        Result := S_OK;
-      End;
-    End
-    {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'Parse failure!'){$ENDIF};
+    {$IFDEF LOCALTRACE}parseResult := {$ENDIF}
+      ParseRSSStream(mRSSStream,rssTitle,rssDescription,rssImage,rssList);
+      
+    {$IFDEF LOCALTRACE}
+      If parseResult = False then
+        DebugMsgFT(LogInit,'Parse failure!');
+        DebugMsgFT(LogInit,IntToStr(rssList.Count)+' entries after parsing');
+    {$ENDIF}
   End
   {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'Download failed, Status "'+dlStatus+'", Error #'+IntToHex(dlError,8)+' (after)'){$ENDIF};
 
-  mStream.Free;
+  If rssList.Count > 0 then
+  Begin
+    If rssList.Count > RSS_MAX_ENTRIES then
+    Begin
+      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Trimming entries, current count : '+IntToStr(rssList.Count));{$ENDIF}
+      While rssList.Count > RSS_MAX_ENTRIES do
+      Begin
+        Dispose(PRSSEntryRecord(rssList[0]));
+        rssList.Delete(0);
+      End;
+      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'Trimming complete, current count : '+IntToStr(rssList.Count));{$ENDIF}
+    End;
+
+    rssList.Sort(@SortByDate);
+
+    If SaveRSSListToFile(rssList,sDataPath+EncodeFileName(CategoryID)+rssExt) = False then
+    Begin
+      {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'SaveRSSListToFile returned false!');{$ENDIF}
+    End;
+
+    mStream := TMemoryStream.Create;
+
+    For I := 0 to rssList.Count-1 do
+    Begin
+      If I = 0 then
+        //sItemList := RSSrecordToString(PRSSEntryRecord(rssList[I])) else
+        //sItemList := sItemList+'|'+RSSrecordToString(PRSSEntryRecord(rssList[I]));
+        sUTF8 := UTF8Encode(RSSrecordToString(PRSSEntryRecord(rssList[I]))) else
+        sUTF8 := '|'+UTF8Encode(RSSrecordToString(PRSSEntryRecord(rssList[I])));
+
+      mStream.Write(sUTF8[1],Length(sUTF8));
+      
+      Dispose(PRSSEntryRecord(rssList[I]));
+    End;
+
+    // Add a refesh entry with end of string marker "#0".
+    sUTF8 := UTF8Encode(sItemList+'|"Type=3",Path="Refresh","MetaEntry5='+rssDescription+'"'+#0);
+    mStream.Write(sUTF8[1],Length(sUTF8));
+    //iLen  := Length(sUTF8);
+
+    //If iLen < 1024*1024*10 then
+    If mStream.Size < 1024*1024*10 then
+    Begin
+      mStream.Position := 0;
+      mStream.Read(ItemList^.catItems^,mStream.Size);
+      //Move(sUTF8[1],ItemList^.catItems^,iLen);
+      Result := S_OK;
+    End
+    {$IFDEF LOCALTRACE}Else DebugMsgFT(LogInit,'RSS parsed results larger than the 10mb buffer!!!'){$ENDIF};
+
+    mStream.Free;
+  End;
+
+  mRSSStream.Free;
   rssList.Free;
 
   {$IFDEF LOCALTRACE}DebugMsgFT(LogInit,'GetList (after)');{$ENDIF}
@@ -393,15 +500,24 @@ begin
 end;
 
 
+function RequireInput : Bool; stdcall;
+begin
+  Result := False;
+end;
+
 
 exports
    InitPlugin,
    FreePlugin,
+   CanRefresh,
+   Refresh,
    CanConfigure,
    Configure,
    GetList,
    CreateCategory,
+   DeleteCategory,
    RequireTitle,
+   RequireInput,
    GetInputID;
 
 
